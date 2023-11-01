@@ -3,63 +3,18 @@ package server
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"strings"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
-	"github.com/gorilla/websocket"
-	"github.com/robertlestak/mytun/pkg/request"
 	log "github.com/sirupsen/logrus"
 )
 
-var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
-}
-
 func handleHealthCheck(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "OK")
-}
-
-func handleSocketConnection(w http.ResponseWriter, r *http.Request) {
-	l := log.WithFields(log.Fields{
-		"app": "mytun",
-		"cmd": "server.handleSocketConnection",
-	})
-	l.Debug("Handling socket connection")
-	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	defer conn.Close()
-	clientId := uuid.New().String()
-	// remove dashes
-	clientId = strings.Replace(clientId, "-", "", -1)
-	// trim to the first 8 characters
-	clientId = clientId[:8]
-	AddClient(clientId, conn)
-	defer RemoveClient(clientId)
-	log.WithFields(log.Fields{
-		"client-id": clientId,
-	}).Debug("Added client")
-	// send the client their client ID
-	if err := conn.WriteMessage(websocket.TextMessage, []byte(clientId)); err != nil {
-		log.WithError(err).Error("Failed to send client ID")
-		return
-	}
-	// now that the client has their id, keep the connection open
-	// so we can proxy requests to the client
-	// since we are reading the client message in the handleRequest function,
-	// we can't read the client message here, otherwise the handleRequest function
-	// won't be able to read it. Instead, we'll just wait for the client to close
-	// the connection.
-	<-ClientDone(clientId)
-	log.WithFields(log.Fields{
-		"client-id": clientId,
-	}).Debug("Client done")
 }
 
 func handleRequest(w http.ResponseWriter, r *http.Request) {
@@ -88,62 +43,21 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Client not found", http.StatusNotFound)
 		return
 	}
-
-	// Extract request data
-	requestData := request.RequestData{
-		Method: r.Method,
-		URL:    r.URL.String(),
-		Header: r.Header,
-	}
-	requestBody, err := io.ReadAll(r.Body)
+	// proxy the request to the client ip/port
+	target := fmt.Sprintf("http://%s:%d", c.IP, c.Port)
+	targetUrl, err := url.Parse(target)
 	if err != nil {
-		log.WithError(err).Error("Failed to read request body")
-		http.Error(w, "Bad Request", http.StatusBadRequest)
+		log.WithFields(log.Fields{
+			"app":       "mytun",
+			"cmd":       "server.handleRequest",
+			"client-id": clientId,
+			"target":    target,
+		}).Error("Error parsing target url")
+		http.Error(w, "Error parsing target url", http.StatusInternalServerError)
 		return
 	}
-	// Set the request body in the RequestData struct
-	requestData.Body = requestBody
-
-	// Send the request data to the client via the WebSocket
-	jsonRequest, err := json.Marshal(requestData)
-	if err != nil {
-		log.WithError(err).Error("Failed to marshal request data")
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		return
-	}
-
-	if err := c.WriteMessage(websocket.TextMessage, jsonRequest); err != nil {
-		log.WithError(err).Error("Failed to send request to client")
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		return
-	}
-	// Receive the client's response from the WebSocket
-	messageType, response, err := c.ReadMessage()
-	if err != nil {
-		log.WithError(err).Error("Failed to read response from client")
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		return
-	}
-	if messageType != websocket.TextMessage {
-		log.Error("Unexpected response type from client")
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		return
-	}
-	var responseData request.ResponseData
-	if err := json.Unmarshal(response, &responseData); err != nil {
-		log.WithError(err).Error("Failed to unmarshal response data")
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(responseData.StatusCode)
-	for k, v := range responseData.Header {
-		w.Header().Set(k, v[0])
-	}
-	if _, err := w.Write(responseData.Body); err != nil {
-		log.WithError(err).Error("Failed to write response body")
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		return
-	}
+	proxy := httputil.NewSingleHostReverseProxy(targetUrl)
+	proxy.ServeHTTP(w, r)
 }
 
 func handleClientClosure(w http.ResponseWriter, r *http.Request) {
@@ -159,17 +73,38 @@ func handleClientClosure(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func SocketServer(listenAddr string) error {
+func handleClientConnect(w http.ResponseWriter, r *http.Request) {
+	fullId := uuid.New().String()
+	clientId := fullId[:8]
+	defer r.Body.Close()
+	c := &Client{}
+	if err := json.NewDecoder(r.Body).Decode(c); err != nil {
+		http.Error(w, "Error decoding request", http.StatusBadRequest)
+		return
+	}
+	c.ID = clientId
+	AddClient(clientId, c)
+	log.WithFields(log.Fields{
+		"app":       "mytun",
+		"cmd":       "server.handleClientConnect",
+		"client-id": clientId,
+		"client-ip": c.IP,
+		"client-p":  c.Port,
+	}).Debug("Connecting client")
+	fmt.Fprintf(w, "%s", clientId)
+}
+
+func InternalServer(listenAddr string) error {
 	l := log.WithFields(log.Fields{
 		"app":         "mytun",
-		"cmd":         "server.SocketServer",
+		"cmd":         "server.InternalServer",
 		"listen-addr": listenAddr,
 	})
 	l.Debug("Starting server")
 	r := mux.NewRouter()
 	r.HandleFunc("/health", handleHealthCheck)
-	r.HandleFunc("/ws", handleSocketConnection)
 	r.HandleFunc("/close/{id}", handleClientClosure).Methods("POST")
+	r.HandleFunc("/connect", handleClientConnect).Methods("POST")
 	if err := http.ListenAndServe(listenAddr, r); err != nil {
 		return err
 	}

@@ -1,20 +1,25 @@
 package server
 
 import (
-	"github.com/gorilla/websocket"
 	log "github.com/sirupsen/logrus"
 )
 
+type Client struct {
+	ID   string `json:"id"`
+	IP   string `json:"ip"`
+	Port int    `json:"port"`
+}
+
 var (
-	Clients     = make(map[string]*websocket.Conn)
+	Clients     = make(map[string]*Client)
 	ClientsDone = make(map[string]chan struct{})
 )
 
-func AddClient(clientId string, conn *websocket.Conn) {
+func AddClient(clientId string, c *Client) {
 	log.WithFields(log.Fields{
 		"client-id": clientId,
 	}).Debug("Adding client")
-	Clients[clientId] = conn
+	Clients[clientId] = c
 	ClientsDone[clientId] = make(chan struct{})
 }
 

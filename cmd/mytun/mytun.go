@@ -10,15 +10,16 @@ import (
 )
 
 var (
-	mytunFlagset     = flag.NewFlagSet("mytun", flag.ExitOnError)
-	serverFlagset    = flag.NewFlagSet("server", flag.ExitOnError)
-	socketListenAddr = serverFlagset.String("socket-listen-addr", ":8080", "Listen address")
-	publicListenAddr = serverFlagset.String("public-listen-addr", ":8081", "Listen address")
-	clientFlagset    = flag.NewFlagSet("client", flag.ExitOnError)
-	endpoint         = clientFlagset.String("endpoint", "localhost:8080", "Endpoint")
-	insecure         = clientFlagset.Bool("insecure", false, "Insecure")
-	domain           = clientFlagset.String("domain", "localhost", "Domain")
-	port             = clientFlagset.Int("port", 3000, "Port")
+	mytunFlagset       = flag.NewFlagSet("mytun", flag.ExitOnError)
+	serverFlagset      = flag.NewFlagSet("server", flag.ExitOnError)
+	internalListenAddr = serverFlagset.String("internal-addr", ":8080", "Listen address")
+	publicListenAddr   = serverFlagset.String("public-addr", ":8081", "Listen address")
+	clientFlagset      = flag.NewFlagSet("client", flag.ExitOnError)
+	endpoint           = clientFlagset.String("endpoint", "localhost:8080", "Endpoint")
+	insecure           = clientFlagset.Bool("insecure", false, "Insecure")
+	clientIp           = clientFlagset.String("ip", "", "IP")
+	domain             = clientFlagset.String("domain", "localhost", "Domain")
+	port               = clientFlagset.Int("port", 3000, "Port")
 )
 
 func init() {
@@ -41,7 +42,7 @@ func serverCmd() error {
 			l.WithError(err).Fatal("Failed to start public server")
 		}
 	}()
-	if err := server.SocketServer(*socketListenAddr); err != nil {
+	if err := server.InternalServer(*internalListenAddr); err != nil {
 		l.WithError(err).Fatal("Failed to start server")
 	}
 	return nil
@@ -57,6 +58,7 @@ func clientCmd() error {
 	cl := &client.Client{
 		Endpoint: *endpoint,
 		Insecure: *insecure,
+		IP:       *clientIp,
 		Port:     *port,
 		Domain:   *domain,
 	}
