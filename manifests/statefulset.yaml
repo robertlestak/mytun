@@ -1,0 +1,39 @@
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mytun
+  namespace: default
+  labels:
+    app: mytun
+spec:
+  serviceName: mytun
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mytun
+  template:
+    metadata:
+      labels:
+        app: mytun
+    spec:
+      containers:
+      - name: mytun
+        image: robertlestak/mytun:latest
+        args:
+          - server
+        imagePullPolicy: Always
+        ports:
+          - containerPort: 8080
+            name: http-socket
+            protocol: TCP
+          - containerPort: 8081
+            name: http-public
+            protocol: TCP
+        resources:
+          requests:
+            cpu: 100m
+            memory: 100Mi
+          limits:
+            cpu: "2"
+            memory: "2Gi"
