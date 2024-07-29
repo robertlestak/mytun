@@ -105,26 +105,63 @@ func GetInternalAddress() (string, error) {
 		"fn":  "getInternalAddress",
 	})
 	l.Debug("start")
-	var intIp string
+
+	// Initialize netroute
 	r, err := netroute.New()
 	if err != nil {
 		l.Error(err)
-		return intIp, err
+		return "", err
 	}
-	_, _, src, err := r.Route(net.IPv4(10, 0, 0, 1))
+
+	// Get all interfaces
+	ifaces, err := net.Interfaces()
 	if err != nil {
 		l.Error(err)
-		return intIp, err
+		return "", err
 	}
-	l.Debugf("src=%s", src)
-	intIp = src.String()
-	if intIp == "" {
-		return intIp, errors.New("internal IP not found")
+
+	var vpnIP string
+	for _, iface := range ifaces {
+		addrs, err := iface.Addrs()
+		if err != nil {
+			l.Error(err)
+			continue
+		}
+
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+
+			// Check if IP is within the VPN subnet and not part of the local network
+			if ip != nil && strings.HasPrefix(ip.String(), "10.25") && !strings.HasPrefix(ip.String(), "10.0") {
+				_, _, src, err := r.Route(ip)
+				if err != nil {
+					l.Error(err)
+					continue
+				}
+
+				if src.String() == ip.String() {
+					vpnIP = src.String()
+					break
+				}
+			}
+		}
+
+		if vpnIP != "" {
+			break
+		}
 	}
-	if !strings.HasPrefix(intIp, "10.") {
-		return intIp, errors.New("internal IP does not start with 10. Please ensure you are connected to the VPN")
+
+	if vpnIP == "" {
+		return "", errors.New("VPN IP not found")
 	}
-	return intIp, err
+
+	return vpnIP, nil
 }
 
 func (c *Client) Connect() error {
