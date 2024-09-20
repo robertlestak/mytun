@@ -74,24 +74,28 @@ func handleClientClosure(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleClientConnect(w http.ResponseWriter, r *http.Request) {
-	fullId := uuid.New().String()
-	clientId := fullId[:8]
 	defer r.Body.Close()
 	c := &Client{}
 	if err := json.NewDecoder(r.Body).Decode(c); err != nil {
 		http.Error(w, "Error decoding request", http.StatusBadRequest)
 		return
 	}
-	c.ID = clientId
-	AddClient(clientId, c)
+	if c.ID == "" {
+		fullId := uuid.New().String()
+		c.ID = fullId[:8]
+	}
+	if err := AddClient(c.ID, c); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	log.WithFields(log.Fields{
 		"app":       "mytun",
 		"cmd":       "server.handleClientConnect",
-		"client-id": clientId,
+		"client-id": c.ID,
 		"client-ip": c.IP,
 		"client-p":  c.Port,
 	}).Debug("Connecting client")
-	fmt.Fprintf(w, "%s", clientId)
+	fmt.Fprintf(w, "%s", c.ID)
 }
 
 func InternalServer(listenAddr string) error {

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -14,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	netroute "github.com/libp2p/go-netroute"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 )
@@ -99,71 +97,6 @@ func (c *Client) Close() error {
 	return nil
 }
 
-func GetInternalAddress() (string, error) {
-	l := log.WithFields(log.Fields{
-		"app": "ugrok",
-		"fn":  "getInternalAddress",
-	})
-	l.Debug("start")
-
-	// Initialize netroute
-	r, err := netroute.New()
-	if err != nil {
-		l.Error(err)
-		return "", err
-	}
-
-	// Get all interfaces
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		l.Error(err)
-		return "", err
-	}
-
-	var vpnIP string
-	for _, iface := range ifaces {
-		addrs, err := iface.Addrs()
-		if err != nil {
-			l.Error(err)
-			continue
-		}
-
-		for _, addr := range addrs {
-			var ip net.IP
-			switch v := addr.(type) {
-			case *net.IPNet:
-				ip = v.IP
-			case *net.IPAddr:
-				ip = v.IP
-			}
-
-			// Check if IP is within the VPN subnet and not part of the local network
-			if ip != nil && strings.HasPrefix(ip.String(), "10.25") && !strings.HasPrefix(ip.String(), "10.0") {
-				_, _, src, err := r.Route(ip)
-				if err != nil {
-					l.Error(err)
-					continue
-				}
-
-				if src.String() == ip.String() {
-					vpnIP = src.String()
-					break
-				}
-			}
-		}
-
-		if vpnIP != "" {
-			break
-		}
-	}
-
-	if vpnIP == "" {
-		return "", errors.New("VPN IP not found")
-	}
-
-	return vpnIP, nil
-}
-
 func (c *Client) Connect() error {
 	l := log.WithFields(log.Fields{
 		"app": "mytun",
@@ -176,11 +109,7 @@ func (c *Client) Connect() error {
 	}
 	endpoint := fmt.Sprintf("%s%s/connect", proto, c.Endpoint)
 	if c.IP == "" {
-		var err error
-		c.IP, err = GetInternalAddress()
-		if err != nil {
-			return err
-		}
+		return errors.New("IP is required")
 	}
 	jd, err := json.Marshal(c)
 	if err != nil {

@@ -18,6 +18,7 @@ var (
 	endpoint           = clientFlagset.String("endpoint", "localhost:8080", "Endpoint")
 	insecure           = clientFlagset.Bool("insecure", false, "Insecure")
 	clientIp           = clientFlagset.String("ip", "", "IP")
+	clientId           = clientFlagset.String("id", "", "ID. If not provided, a random UUID will be generated")
 	domain             = clientFlagset.String("domain", "localhost", "Domain")
 	port               = clientFlagset.Int("port", 3000, "Port")
 )
@@ -54,11 +55,15 @@ func clientCmd() error {
 		"cmd": "client",
 	})
 	l.Debug("Starting client")
+	if len(os.Args) < 2 {
+		l.Fatal("No command provided")
+	}
 	clientFlagset.Parse(os.Args[2:])
 	cl := &client.Client{
 		Endpoint: *endpoint,
 		Insecure: *insecure,
 		IP:       *clientIp,
+		ID:       *clientId,
 		Port:     *port,
 		Domain:   *domain,
 	}

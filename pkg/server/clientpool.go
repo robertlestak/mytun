@@ -1,6 +1,8 @@
 package server
 
 import (
+	"errors"
+
 	log "github.com/sirupsen/logrus"
 )
 
@@ -11,16 +13,21 @@ type Client struct {
 }
 
 var (
-	Clients     = make(map[string]*Client)
-	ClientsDone = make(map[string]chan struct{})
+	Clients         = make(map[string]*Client)
+	ClientsDone     = make(map[string]chan struct{})
+	ErrClientExists = errors.New("client id already exists")
 )
 
-func AddClient(clientId string, c *Client) {
+func AddClient(clientId string, c *Client) error {
 	log.WithFields(log.Fields{
 		"client-id": clientId,
 	}).Debug("Adding client")
+	if Clients[clientId] != nil {
+		return ErrClientExists
+	}
 	Clients[clientId] = c
 	ClientsDone[clientId] = make(chan struct{})
+	return nil
 }
 
 func RemoveClient(clientId string) {
