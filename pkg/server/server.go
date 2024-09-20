@@ -69,8 +69,9 @@ func handleClientClosure(w http.ResponseWriter, r *http.Request) {
 		"client-id": clientId,
 	}).Debug("Closing client")
 	if Clients[clientId] != nil {
-		close(ClientDone(clientId))
+		RemoveClient(clientId)
 	}
+	fmt.Fprintf(w, "OK")
 }
 
 func handleClientConnect(w http.ResponseWriter, r *http.Request) {

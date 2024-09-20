@@ -14,7 +14,6 @@ type Client struct {
 
 var (
 	Clients         = make(map[string]*Client)
-	ClientsDone     = make(map[string]chan struct{})
 	ErrClientExists = errors.New("client id already exists")
 )
 
@@ -26,7 +25,6 @@ func AddClient(clientId string, c *Client) error {
 		return ErrClientExists
 	}
 	Clients[clientId] = c
-	ClientsDone[clientId] = make(chan struct{})
 	return nil
 }
 
@@ -35,12 +33,4 @@ func RemoveClient(clientId string) {
 		"client-id": clientId,
 	}).Debug("Removing client")
 	delete(Clients, clientId)
-	delete(ClientsDone, clientId)
-	if ClientsDone[clientId] != nil {
-		close(ClientsDone[clientId])
-	}
-}
-
-func ClientDone(clientId string) chan struct{} {
-	return ClientsDone[clientId]
 }
