@@ -2,6 +2,7 @@ package server
 
 import (
 	"errors"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -13,8 +14,9 @@ type Client struct {
 }
 
 var (
-	Clients         = make(map[string]*Client)
-	ErrClientExists = errors.New("client id already exists")
+	Clients           = make(map[string]*Client)
+	ClientLastConnect = make(map[string]time.Time)
+	ErrClientExists   = errors.New("client id already exists")
 )
 
 func AddClient(clientId string, c *Client) error {
@@ -25,6 +27,7 @@ func AddClient(clientId string, c *Client) error {
 		return ErrClientExists
 	}
 	Clients[clientId] = c
+	ClientLastConnect[clientId] = time.Now()
 	return nil
 }
 
@@ -33,4 +36,5 @@ func RemoveClient(clientId string) {
 		"client-id": clientId,
 	}).Debug("Removing client")
 	delete(Clients, clientId)
+	delete(ClientLastConnect, clientId)
 }

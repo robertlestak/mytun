@@ -7,6 +7,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
@@ -43,6 +44,7 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Client not found", http.StatusNotFound)
 		return
 	}
+	ClientLastConnect[clientId] = time.Now()
 	// proxy the request to the client ip/port
 	target := fmt.Sprintf("http://%s:%d", c.IP, c.Port)
 	targetUrl, err := url.Parse(target)
@@ -99,13 +101,14 @@ func handleClientConnect(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "%s", c.ID)
 }
 
-func InternalServer(listenAddr string) error {
+func InternalServer(listenAddr string, timeout time.Duration) error {
 	l := log.WithFields(log.Fields{
 		"app":         "mytun",
 		"cmd":         "server.InternalServer",
 		"listen-addr": listenAddr,
 	})
 	l.Debug("Starting server")
+	go TimeoutConnections(timeout)
 	r := mux.NewRouter()
 	r.HandleFunc("/health", handleHealthCheck)
 	r.HandleFunc("/close/{id}", handleClientClosure).Methods("POST")
@@ -130,4 +133,27 @@ func PublicServer(listenAddr string) error {
 		return err
 	}
 	return nil
+}
+
+func TimeoutConnections(timeout time.Duration) {
+	l := log.WithFields(log.Fields{
+		"app": "mytun",
+		"cmd": "server.TimeoutConnections",
+	})
+	if timeout == 0 {
+		l.Debug("Timeout disabled")
+		return
+	}
+	l.Debug("Starting connection timeout loop")
+	for {
+		for c, t := range ClientLastConnect {
+			if time.Since(t) > timeout {
+				l.WithFields(log.Fields{
+					"client-id": c,
+				}).Debug("Timing out client")
+				RemoveClient(c)
+			}
+		}
+		time.Sleep(time.Minute * 1)
+	}
 }

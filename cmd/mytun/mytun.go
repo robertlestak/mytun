@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"os"
+	"time"
 
 	"github.com/robertlestak/mytun/pkg/client"
 	"github.com/robertlestak/mytun/pkg/server"
@@ -20,6 +21,7 @@ var (
 	clientIp           = clientFlagset.String("ip", "", "IP")
 	clientId           = clientFlagset.String("id", "", "ID. If not provided, a random UUID will be generated")
 	domain             = clientFlagset.String("domain", "localhost", "Domain")
+	connTimeout        = clientFlagset.String("conn-timeout", "60m", "Connection timeout")
 	port               = clientFlagset.Int("port", 3000, "Port")
 )
 
@@ -43,7 +45,12 @@ func serverCmd() error {
 			l.WithError(err).Fatal("Failed to start public server")
 		}
 	}()
-	if err := server.InternalServer(*internalListenAddr); err != nil {
+	pd, err := time.ParseDuration(*connTimeout)
+	if err != nil {
+		l.WithError(err).Fatal("Failed to parse connection timeout")
+	}
+
+	if err := server.InternalServer(*internalListenAddr, pd); err != nil {
 		l.WithError(err).Fatal("Failed to start server")
 	}
 	return nil
