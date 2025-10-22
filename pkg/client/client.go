@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -18,12 +19,13 @@ import (
 )
 
 type Client struct {
-	ID       string `yaml:"id" json:"id"`
-	Insecure bool   `yaml:"insecure" json:"insecure"`
-	Endpoint string `yaml:"endpoint" json:"endpoint"`
-	IP       string `yaml:"ip" json:"ip"`
-	Port     int    `yaml:"port" json:"port"`
-	Domain   string `yaml:"domain" json:"domain"`
+	ID        string `yaml:"id" json:"id"`
+	Insecure  bool   `yaml:"insecure" json:"insecure"`
+	Endpoint  string `yaml:"endpoint" json:"endpoint"`
+	IP        string `yaml:"ip" json:"ip"`
+	Port      int    `yaml:"port" json:"port"`
+	Domain    string `yaml:"domain" json:"domain"`
+	ProxyPort int    `yaml:"proxy_port" json:"proxy_port"`
 }
 
 func (c *Client) ReadFromEnv() {
@@ -97,12 +99,55 @@ func (c *Client) Close() error {
 	return nil
 }
 
+func (c *Client) startProxy() net.Listener {
+	if c.ProxyPort == 0 {
+		return nil
+	}
+
+	listener, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", c.ProxyPort))
+	if err != nil {
+		log.WithError(err).Fatal("Failed to start proxy")
+	}
+
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func(clientConn net.Conn) {
+				defer clientConn.Close()
+				targetConn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", c.Port))
+				if err != nil {
+					return
+				}
+				defer targetConn.Close()
+
+				go io.Copy(targetConn, clientConn)
+				io.Copy(clientConn, targetConn)
+			}(conn)
+		}
+	}()
+
+	log.WithField("proxy_port", c.ProxyPort).WithField("target_port", c.Port).Info("TCP proxy started")
+	return listener
+}
+
 func (c *Client) Connect() error {
 	l := log.WithFields(log.Fields{
 		"app": "mytun",
 		"cmd": "client.Connect",
 	})
 	l.Debug("Starting client")
+
+	// Start proxy if configured
+	proxyListener := c.startProxy()
+	defer func() {
+		if proxyListener != nil {
+			proxyListener.Close()
+		}
+	}()
+
 	proto := "https://"
 	if c.Insecure {
 		proto = "http://"
@@ -111,7 +156,30 @@ func (c *Client) Connect() error {
 	if c.IP == "" {
 		return errors.New("IP is required")
 	}
-	jd, err := json.Marshal(c)
+	
+	// Send proxy port to server if proxy is enabled, otherwise send actual port
+	portToSend := c.Port
+	if c.ProxyPort != 0 {
+		portToSend = c.ProxyPort
+	}
+	
+	clientData := struct {
+		ID       string `json:"id"`
+		Insecure bool   `json:"insecure"`
+		Endpoint string `json:"endpoint"`
+		IP       string `json:"ip"`
+		Port     int    `json:"port"`
+		Domain   string `json:"domain"`
+	}{
+		ID:       c.ID,
+		Insecure: c.Insecure,
+		Endpoint: c.Endpoint,
+		IP:       c.IP,
+		Port:     portToSend,
+		Domain:   c.Domain,
+	}
+	
+	jd, err := json.Marshal(clientData)
 	if err != nil {
 		return err
 	}
