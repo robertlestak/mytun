@@ -1,75 +1,138 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
 )
+
+var pendingRequests = make(map[string]chan []byte)
+var pendingMutex sync.RWMutex
+
+func handleWebSocketConnect(w http.ResponseWriter, r *http.Request) {
+	conn, err := websocket.Accept(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	ctx := context.Background()
+	_, data, _ := conn.Read(ctx)
+	
+	c := &Client{}
+	json.Unmarshal(data, c)
+	if c.ID == "" {
+		c.ID = uuid.New().String()[:8]
+	}
+	
+	c.WSConn = conn
+	c.WSCtx = ctx
+	AddClient(c.ID, c)
+	defer RemoveClient(c.ID)
+	
+	conn.Write(ctx, websocket.MessageText, []byte(c.ID))
+	
+	// Handle responses from client
+	for {
+		_, respData, err := conn.Read(ctx)
+		if err != nil {
+			break
+		}
+		
+		var resp map[string]interface{}
+		json.Unmarshal(respData, &resp)
+		reqID := resp["id"].(string)
+		
+		pendingMutex.RLock()
+		if ch, ok := pendingRequests[reqID]; ok {
+			ch <- []byte(resp["body"].(string))
+		}
+		pendingMutex.RUnlock()
+	}
+}
 
 func handleHealthCheck(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "OK")
 }
 
 func handleRequest(w http.ResponseWriter, r *http.Request) {
-	var clientId string
-
-	// Get client for request
-	// Host can be in the following format: <uuid>.<domain>.<tld>
-	hsplit := strings.Split(r.Host, ".")
-	clientId = hsplit[0]
-
-	log.WithFields(log.Fields{
-		"app":       "mytun",
-		"cmd":       "server.handleRequest",
-		"client-id": clientId,
-		"method":    r.Method,
-		"url":       r.URL.String(),
-	}).Debug("Handling request")
-
+	clientId := strings.Split(r.Host, ".")[0]
 	c, ok := Clients[clientId]
 	if !ok {
-		log.WithFields(log.Fields{
-			"app":       "mytun",
-			"cmd":       "server.handleRequest",
-			"client-id": clientId,
-		}).Error("Client not found")
 		http.Error(w, "Client not found", http.StatusNotFound)
 		return
 	}
 	ClientLastConnect[clientId] = time.Now()
-	// proxy the request to the client ip/port
-	target := fmt.Sprintf("http://%s:%d", c.IP, c.Port)
-	targetUrl, err := url.Parse(target)
-	if err != nil {
+	
+	if c.WSConn == nil {
+		// Fallback to direct connection
 		log.WithFields(log.Fields{
-			"app":       "mytun",
-			"cmd":       "server.handleRequest",
 			"client-id": clientId,
-			"target":    target,
-		}).Error("Error parsing target url")
-		http.Error(w, "Error parsing target url", http.StatusInternalServerError)
+			"protocol":  "http",
+			"method":    r.Method,
+			"url":       r.URL.String(),
+		}).Info("Proxying request via HTTP")
+		
+		target := fmt.Sprintf("http://%s:%d", c.IP, c.Port)
+		targetUrl, _ := url.Parse(target)
+		proxy := httputil.NewSingleHostReverseProxy(targetUrl)
+		proxy.ServeHTTP(w, r)
 		return
 	}
-	proxy := httputil.NewSingleHostReverseProxy(targetUrl)
-	proxy.ServeHTTP(w, r)
+	
+	log.WithFields(log.Fields{
+		"client-id": clientId,
+		"protocol":  "websocket",
+		"method":    r.Method,
+		"url":       r.URL.String(),
+	}).Info("Proxying request via WebSocket")
+	
+	// Send request over websocket
+	reqID := uuid.New().String()
+	req := map[string]interface{}{
+		"id":     reqID,
+		"method": r.Method,
+		"url":    r.URL.String(),
+		"headers": r.Header,
+	}
+	
+	respCh := make(chan []byte, 1)
+	pendingMutex.Lock()
+	pendingRequests[reqID] = respCh
+	pendingMutex.Unlock()
+	
+	defer func() {
+		pendingMutex.Lock()
+		delete(pendingRequests, reqID)
+		pendingMutex.Unlock()
+	}()
+	
+	reqData, _ := json.Marshal(req)
+	c.WSConn.Write(c.WSCtx, websocket.MessageText, reqData)
+	
+	// Wait for response
+	select {
+	case respBody := <-respCh:
+		w.Write(respBody)
+	case <-time.After(30 * time.Second):
+		http.Error(w, "Request timeout", http.StatusGatewayTimeout)
+	}
 }
 
 func handleClientClosure(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	clientId := vars["id"]
-	log.WithFields(log.Fields{
-		"app":       "mytun",
-		"cmd":       "server.handleClientClosure",
-		"client-id": clientId,
-	}).Debug("Closing client")
 	if Clients[clientId] != nil {
 		RemoveClient(clientId)
 	}
@@ -84,76 +147,42 @@ func handleClientConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if c.ID == "" {
-		fullId := uuid.New().String()
-		c.ID = fullId[:8]
+		c.ID = uuid.New().String()[:8]
 	}
 	if err := AddClient(c.ID, c); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	log.WithFields(log.Fields{
-		"app":       "mytun",
-		"cmd":       "server.handleClientConnect",
-		"client-id": c.ID,
-		"client-ip": c.IP,
-		"client-p":  c.Port,
-	}).Debug("Connecting client")
 	fmt.Fprintf(w, "%s", c.ID)
 }
 
 func InternalServer(listenAddr string, timeout time.Duration) error {
-	l := log.WithFields(log.Fields{
-		"app":         "mytun",
-		"cmd":         "server.InternalServer",
-		"listen-addr": listenAddr,
-	})
-	l.Debug("Starting server")
 	go TimeoutConnections(timeout)
 	r := mux.NewRouter()
 	r.HandleFunc("/health", handleHealthCheck)
 	r.HandleFunc("/close/{id}", handleClientClosure).Methods("POST")
 	r.HandleFunc("/connect", handleClientConnect).Methods("POST")
-	if err := http.ListenAndServe(listenAddr, r); err != nil {
-		return err
-	}
-	return nil
+	r.HandleFunc("/ws", handleWebSocketConnect)
+	return http.ListenAndServe(listenAddr, r)
 }
 
 func PublicServer(listenAddr string) error {
-	l := log.WithFields(log.Fields{
-		"app":         "mytun",
-		"cmd":         "server.PublicServer",
-		"listen-addr": listenAddr,
-	})
-	l.Debug("Starting server")
 	r := mux.NewRouter()
 	r.HandleFunc("/health", handleHealthCheck)
 	r.PathPrefix("/").HandlerFunc(handleRequest)
-	if err := http.ListenAndServe(listenAddr, r); err != nil {
-		return err
-	}
-	return nil
+	return http.ListenAndServe(listenAddr, r)
 }
 
 func TimeoutConnections(timeout time.Duration) {
-	l := log.WithFields(log.Fields{
-		"app": "mytun",
-		"cmd": "server.TimeoutConnections",
-	})
 	if timeout == 0 {
-		l.Debug("Timeout disabled")
 		return
 	}
-	l.Debug("Starting connection timeout loop")
 	for {
 		for c, t := range ClientLastConnect {
 			if time.Since(t) > timeout {
-				l.WithFields(log.Fields{
-					"client-id": c,
-				}).Debug("Timing out client")
 				RemoveClient(c)
 			}
 		}
-		time.Sleep(time.Minute * 1)
+		time.Sleep(time.Minute)
 	}
 }

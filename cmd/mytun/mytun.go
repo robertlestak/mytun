@@ -24,6 +24,7 @@ var (
 	connTimeout        = clientFlagset.String("conn-timeout", "60m", "Connection timeout")
 	port               = clientFlagset.Int("port", 3000, "Port")
 	proxyPort          = clientFlagset.Int("proxy-port", 0, "Start TCP proxy on this port (forwards to localhost:port)")
+	useWebSocket       = clientFlagset.Bool("ws", false, "Use websocket for client-initiated connection")
 )
 
 func init() {
@@ -68,13 +69,14 @@ func clientCmd() error {
 	}
 	clientFlagset.Parse(os.Args[2:])
 	cl := &client.Client{
-		Endpoint:  *endpoint,
-		Insecure:  *insecure,
-		IP:        *clientIp,
-		ID:        *clientId,
-		Port:      *port,
-		Domain:    *domain,
-		ProxyPort: *proxyPort,
+		Endpoint:     *endpoint,
+		Insecure:     *insecure,
+		IP:           *clientIp,
+		ID:           *clientId,
+		Port:         *port,
+		Domain:       *domain,
+		ProxyPort:    *proxyPort,
+		UseWebSocket: *useWebSocket,
 	}
 	cl.ReadFromContext()
 	if err := cl.Connect(); err != nil {

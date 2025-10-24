@@ -1,16 +1,22 @@
 package server
 
 import (
+	"context"
 	"errors"
+	"net"
 	"time"
 
+	"github.com/coder/websocket"
 	log "github.com/sirupsen/logrus"
 )
 
 type Client struct {
-	ID   string `json:"id"`
-	IP   string `json:"ip"`
-	Port int    `json:"port"`
+	ID     string          `json:"id"`
+	IP     string          `json:"ip"`
+	Port   int             `json:"port"`
+	Conn   net.Conn        `json:"-"`
+	WSConn *websocket.Conn `json:"-"`
+	WSCtx  context.Context `json:"-"`
 }
 
 var (

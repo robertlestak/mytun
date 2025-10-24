@@ -2,30 +2,34 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/coder/websocket"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 )
 
 type Client struct {
-	ID        string `yaml:"id" json:"id"`
-	Insecure  bool   `yaml:"insecure" json:"insecure"`
-	Endpoint  string `yaml:"endpoint" json:"endpoint"`
-	IP        string `yaml:"ip" json:"ip"`
-	Port      int    `yaml:"port" json:"port"`
-	Domain    string `yaml:"domain" json:"domain"`
-	ProxyPort int    `yaml:"proxy_port" json:"proxy_port"`
+	ID           string `yaml:"id" json:"id"`
+	Insecure     bool   `yaml:"insecure" json:"insecure"`
+	Endpoint     string `yaml:"endpoint" json:"endpoint"`
+	IP           string `yaml:"ip" json:"ip"`
+	Port         int    `yaml:"port" json:"port"`
+	Domain       string `yaml:"domain" json:"domain"`
+	ProxyPort    int    `yaml:"proxy_port" json:"proxy_port"`
+	UseWebSocket bool   `yaml:"use_websocket" json:"use_websocket"`
 }
 
 func (c *Client) ReadFromEnv() {
@@ -80,6 +84,76 @@ func (c *Client) ReadFromFile() {
 func (c *Client) ReadFromContext() {
 	c.ReadFromFile()
 	c.ReadFromEnv()
+}
+
+func (c *Client) connectWebSocket() error {
+	scheme := "wss://"
+	if c.Insecure {
+		scheme = "ws://"
+	}
+	
+	u, _ := url.Parse(fmt.Sprintf("%s%s/ws", scheme, c.Endpoint))
+	ctx := context.Background()
+	conn, _, err := websocket.Dial(ctx, u.String(), nil)
+	if err != nil {
+		return err
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	
+	clientData := struct {
+		ID     string `json:"id"`
+		IP     string `json:"ip"`
+		Port   int    `json:"port"`
+		Domain string `json:"domain"`
+	}{c.ID, c.IP, c.Port, c.Domain}
+	
+	data, _ := json.Marshal(clientData)
+	conn.Write(ctx, websocket.MessageText, data)
+	
+	_, idData, _ := conn.Read(ctx)
+	c.ID = strings.TrimSpace(string(idData))
+	
+	proto := "https://"
+	if c.Insecure {
+		proto = "http://"
+	}
+	var clientEndpoint string
+	if c.Domain != "" {
+		clientEndpoint = fmt.Sprintf("%s%s.%s", proto, c.ID, c.Domain)
+	} else {
+		clientEndpoint = fmt.Sprintf("%s%s", proto, c.ID)
+	}
+	fmt.Printf("tunnel open: %s\n", clientEndpoint)
+	
+	// Handle HTTP requests
+	for {
+		_, reqData, err := conn.Read(ctx)
+		if err != nil {
+			break
+		}
+		
+		var req map[string]interface{}
+		json.Unmarshal(reqData, &req)
+		
+		// Make HTTP request to local service
+		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d%s", c.Port, req["url"]))
+		if err != nil {
+			continue
+		}
+		
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		
+		// Send response back
+		response := map[string]interface{}{
+			"id":   req["id"],
+			"body": string(body),
+		}
+		respData, _ := json.Marshal(response)
+		conn.Write(ctx, websocket.MessageText, respData)
+	}
+	
+	return nil
 }
 
 func (c *Client) Close() error {
@@ -139,6 +213,10 @@ func (c *Client) Connect() error {
 		"cmd": "client.Connect",
 	})
 	l.Debug("Starting client")
+
+	if c.UseWebSocket {
+		return c.connectWebSocket()
+	}
 
 	// Start proxy if configured
 	proxyListener := c.startProxy()
