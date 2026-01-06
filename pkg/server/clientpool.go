@@ -28,19 +28,24 @@ var (
 func AddClient(clientId string, c *Client) error {
 	log.WithFields(log.Fields{
 		"client-id": clientId,
-	}).Debug("Adding client")
+		"client_ip": c.IP,
+		"client_port": c.Port,
+	}).Trace("Adding client to pool")
 	if Clients[clientId] != nil {
+		log.WithField("client_id", clientId).Error("Client ID already exists")
 		return ErrClientExists
 	}
 	Clients[clientId] = c
 	ClientLastConnect[clientId] = time.Now()
+	log.WithField("client_id", clientId).WithField("total_clients", len(Clients)).Trace("Client added to pool")
 	return nil
 }
 
 func RemoveClient(clientId string) {
 	log.WithFields(log.Fields{
 		"client-id": clientId,
-	}).Debug("Removing client")
+	}).Trace("Removing client from pool")
 	delete(Clients, clientId)
 	delete(ClientLastConnect, clientId)
+	log.WithField("client_id", clientId).WithField("total_clients", len(Clients)).Trace("Client removed from pool")
 }

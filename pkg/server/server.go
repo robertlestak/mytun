@@ -68,12 +68,17 @@ func handleHealthCheck(w http.ResponseWriter, r *http.Request) {
 
 func handleRequest(w http.ResponseWriter, r *http.Request) {
 	clientId := strings.Split(r.Host, ".")[0]
+	log.WithField("client_id", clientId).WithField("host", r.Host).WithField("method", r.Method).WithField("url", r.URL.String()).Trace("Incoming request")
+	
 	c, ok := Clients[clientId]
 	if !ok {
+		log.WithField("client_id", clientId).Error("Client not found")
 		http.Error(w, "Client not found", http.StatusNotFound)
 		return
 	}
 	ClientLastConnect[clientId] = time.Now()
+	
+	log.WithField("client_id", clientId).WithField("client_ip", c.IP).WithField("client_port", c.Port).Trace("Found client")
 	
 	if c.WSConn == nil {
 		// Fallback to direct connection
@@ -85,9 +90,20 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 		}).Info("Proxying request via HTTP")
 		
 		target := fmt.Sprintf("http://%s:%d", c.IP, c.Port)
+		log.WithField("client_id", clientId).WithField("target", target).Trace("Creating reverse proxy")
+		
 		targetUrl, _ := url.Parse(target)
 		proxy := httputil.NewSingleHostReverseProxy(targetUrl)
+		
+		// Add error handler to proxy
+		proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+			log.WithError(err).WithField("client_id", clientId).WithField("target", target).Error("Reverse proxy error")
+			http.Error(w, "Bad Gateway", http.StatusBadGateway)
+		}
+		
+		log.WithField("client_id", clientId).Trace("Starting reverse proxy request")
 		proxy.ServeHTTP(w, r)
+		log.WithField("client_id", clientId).Trace("Reverse proxy request completed")
 		return
 	}
 	
@@ -119,13 +135,16 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 	}()
 	
 	reqData, _ := json.Marshal(req)
+	log.WithField("client_id", clientId).WithField("req_id", reqID).Trace("Sending websocket request")
 	c.WSConn.Write(c.WSCtx, websocket.MessageText, reqData)
 	
 	// Wait for response
 	select {
 	case respBody := <-respCh:
+		log.WithField("client_id", clientId).WithField("req_id", reqID).WithField("resp_size", len(respBody)).Trace("Received websocket response")
 		w.Write(respBody)
 	case <-time.After(30 * time.Second):
+		log.WithField("client_id", clientId).WithField("req_id", reqID).Error("Websocket request timeout")
 		http.Error(w, "Request timeout", http.StatusGatewayTimeout)
 	}
 }
@@ -143,16 +162,23 @@ func handleClientConnect(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 	c := &Client{}
 	if err := json.NewDecoder(r.Body).Decode(c); err != nil {
+		log.WithError(err).Error("Error decoding client connect request")
 		http.Error(w, "Error decoding request", http.StatusBadRequest)
 		return
 	}
 	if c.ID == "" {
 		c.ID = uuid.New().String()[:8]
 	}
+	
+	log.WithField("client_id", c.ID).WithField("client_ip", c.IP).WithField("client_port", c.Port).Trace("Client connect request")
+	
 	if err := AddClient(c.ID, c); err != nil {
+		log.WithError(err).WithField("client_id", c.ID).Error("Failed to add client")
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	
+	log.WithField("client_id", c.ID).Trace("Client connected successfully")
 	fmt.Fprintf(w, "%s", c.ID)
 }
 

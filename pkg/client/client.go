@@ -187,18 +187,57 @@ func (c *Client) startProxy() net.Listener {
 		for {
 			conn, err := listener.Accept()
 			if err != nil {
+				log.WithError(err).Trace("Proxy listener accept failed")
 				return
 			}
 			go func(clientConn net.Conn) {
-				defer clientConn.Close()
+				clientAddr := clientConn.RemoteAddr().String()
+				log.WithField("client_addr", clientAddr).WithField("proxy_port", c.ProxyPort).WithField("target_port", c.Port).Trace("Proxy connection accepted")
+				
+				defer func() {
+					log.WithField("client_addr", clientAddr).Trace("Proxy connection closed")
+					clientConn.Close()
+				}()
+				
 				targetConn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", c.Port))
 				if err != nil {
+					log.WithError(err).WithField("client_addr", clientAddr).WithField("target_port", c.Port).Error("Failed to connect to target")
 					return
 				}
-				defer targetConn.Close()
+				defer func() {
+					log.WithField("client_addr", clientAddr).Trace("Target connection closed")
+					targetConn.Close()
+				}()
 
-				go io.Copy(targetConn, clientConn)
-				io.Copy(clientConn, targetConn)
+				log.WithField("client_addr", clientAddr).Trace("Starting proxy data transfer")
+				
+				done := make(chan struct{}, 2)
+				
+				// Client -> Target
+				go func() {
+					defer func() { done <- struct{}{} }()
+					n, err := io.Copy(targetConn, clientConn)
+					if err != nil {
+						log.WithError(err).WithField("client_addr", clientAddr).WithField("bytes", n).Trace("Client->Target copy failed")
+					} else {
+						log.WithField("client_addr", clientAddr).WithField("bytes", n).Trace("Client->Target copy completed")
+					}
+				}()
+				
+				// Target -> Client
+				go func() {
+					defer func() { done <- struct{}{} }()
+					n, err := io.Copy(clientConn, targetConn)
+					if err != nil {
+						log.WithError(err).WithField("client_addr", clientAddr).WithField("bytes", n).Trace("Target->Client copy failed")
+					} else {
+						log.WithField("client_addr", clientAddr).WithField("bytes", n).Trace("Target->Client copy completed")
+					}
+				}()
+				
+				// Wait for either direction to complete
+				<-done
+				log.WithField("client_addr", clientAddr).Trace("Proxy transfer finished")
 			}(conn)
 		}
 	}()
