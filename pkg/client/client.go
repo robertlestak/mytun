@@ -136,7 +136,7 @@ func (c *Client) connectWebSocket() error {
 		json.Unmarshal(reqData, &req)
 		
 		// Make HTTP request to local service
-		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d%s", c.Port, req["url"]))
+		resp, err := http.Get(fmt.Sprintf("http://localhost:%d%s", c.Port, req["url"]))
 		if err != nil {
 			continue
 		}
@@ -199,7 +199,7 @@ func (c *Client) startProxy() net.Listener {
 					clientConn.Close()
 				}()
 				
-				targetConn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", c.Port))
+				targetConn, err := net.Dial("tcp", fmt.Sprintf("localhost:%d", c.Port))
 				if err != nil {
 					log.WithError(err).WithField("client_addr", clientAddr).WithField("target_port", c.Port).Error("Failed to connect to target")
 					return
